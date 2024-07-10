@@ -247,7 +247,7 @@ pub fn render_register_mod(
     let can_write = access.can_write();
     let can_reset = properties.reset_value.is_some();
 
-    if can_read {
+    if true {
         let desc = format!("Register `{}` reader", register.name);
         mod_items.extend(quote! {
             #[doc = #desc]
@@ -255,7 +255,7 @@ pub fn render_register_mod(
         });
     }
 
-    if can_write {
+    if true {
         let desc = format!("Register `{}` writer", register.name);
         mod_items.extend(quote! {
             #[doc = #desc]
@@ -339,7 +339,7 @@ pub fn render_register_mod(
         });
     }
 
-    if can_read && !r_impl_items.is_empty() {
+    if true && !r_impl_items.is_empty() {
         mod_items.extend(quote! {
             impl R #open #r_impl_items #close
         });
@@ -350,7 +350,8 @@ pub fn render_register_mod(
         });
     }
 
-    if can_write {
+    // MODIFY HERE
+    if true {
         mod_items.extend(quote! {
             impl W #open
         });
@@ -372,12 +373,14 @@ pub fn render_register_mod(
         )?
     );
 
+    let offset = register.address_offset as u64;
     mod_items.extend(quote! {
         #[doc = #doc]
         pub struct #regspec_ty;
 
         impl crate::RegisterSpec for #regspec_ty {
             type Ux = #rty;
+            const OFFSET: u64 = #offset;
         }
     });
 
@@ -744,7 +747,7 @@ pub fn fields(
         };
 
         // If this field can be read, generate read proxy structure and value structure.
-        if can_read {
+        if true {
             // collect information on items in enumeration to generate it later.
             let mut enum_items = TokenStream::new();
 
@@ -1095,7 +1098,8 @@ pub fn fields(
 
         // If this field can be written, generate write proxy. Generate write value if it differs from
         // the read value, or else we reuse read value.
-        if can_write {
+        // MODIFY HERE
+        if true {
             let mut proxy_items = TokenStream::new();
             let mut unsafety = unsafety(f.write_constraint.as_ref(), width);
 

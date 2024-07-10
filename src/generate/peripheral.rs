@@ -39,7 +39,6 @@ pub fn render(p_original: &Peripheral, index: &Index, config: &Config) -> Result
     let name = util::name_of(&p, config.ignore_groups);
     let span = Span::call_site();
     let p_ty = ident(&name, config, "peripheral", span);
-    let name_str = p_ty.to_string();
     let address = util::hex(p.base_address + config.base_address_shift);
     let description = util::respace(p.description.as_ref().unwrap_or(&p.name));
 
@@ -59,25 +58,6 @@ pub fn render(p_original: &Peripheral, index: &Index, config: &Config) -> Result
     if config.feature_group && p.group_name.is_some() {
         let feature_name = feature_format.apply(p.group_name.as_ref().unwrap());
         feature_attribute.extend(quote! { #[cfg(feature = #feature_name)] });
-    };
-
-    let steal_fn = quote! {
-        /// Steal an instance of this peripheral
-        ///
-        /// # Safety
-        ///
-        /// Ensure that the new instance of the peripheral cannot be used in a way
-        /// that may race with any existing instances, for example by only
-        /// accessing read-only or write-only registers, or by consuming the
-        /// original peripheral and using critical sections to coordinate
-        /// access between multiple new instances.
-        ///
-        /// Additionally, other software such as HALs may rely on only one
-        /// peripheral instance existing to ensure memory safety; ensure
-        /// no stolen instances are passed to such software.
-        pub unsafe fn steal() -> Self {
-            Self { _marker: PhantomData }
-        }
     };
 
     match &p {
@@ -109,32 +89,7 @@ pub fn render(p_original: &Peripheral, index: &Index, config: &Config) -> Result
                     #feature_attribute_n
                     impl #p_ty {
                         ///Pointer to the register block
-                        pub const PTR: *const #base::RegisterBlock = #address as *const _;
-
-                        ///Return the pointer to the register block
-                        #[inline(always)]
-                        pub const fn ptr() -> *const #base::RegisterBlock {
-                            Self::PTR
-                        }
-
-                        #steal_fn
-                    }
-
-                    #feature_attribute_n
-                    impl Deref for #p_ty {
-                        type Target = #base::RegisterBlock;
-
-                        #[inline(always)]
-                        fn deref(&self) -> &Self::Target {
-                            unsafe { &*Self::PTR }
-                        }
-                    }
-
-                    #feature_attribute_n
-                    impl core::fmt::Debug for #p_ty {
-                        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-                            f.debug_struct(#name_str).finish()
-                        }
+                        pub const BASE: u32 = #address;
                     }
                 });
             }
@@ -170,32 +125,7 @@ pub fn render(p_original: &Peripheral, index: &Index, config: &Config) -> Result
                 #feature_attribute
                 impl #p_ty {
                     ///Pointer to the register block
-                    pub const PTR: *const #base::RegisterBlock = #address as *const _;
-
-                    ///Return the pointer to the register block
-                    #[inline(always)]
-                    pub const fn ptr() -> *const #base::RegisterBlock {
-                        Self::PTR
-                    }
-
-                    #steal_fn
-                }
-
-                #feature_attribute
-                impl Deref for #p_ty {
-                    type Target = #base::RegisterBlock;
-
-                    #[inline(always)]
-                    fn deref(&self) -> &Self::Target {
-                        unsafe { &*Self::PTR }
-                    }
-                }
-
-                #feature_attribute
-                impl core::fmt::Debug for #p_ty {
-                    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-                        f.debug_struct(#name_str).finish()
-                    }
+                    pub const BASE: u32 = #address;
                 }
             });
 
@@ -665,6 +595,8 @@ fn register_or_cluster_block(
         pub struct #block_ty {
             #rbfs
         }
+
+        impl crate::FromBytes for RegisterBlock {}
 
         #accessors
     })

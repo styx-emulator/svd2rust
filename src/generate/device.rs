@@ -57,12 +57,10 @@ pub fn render(d: &Device, config: &Config, device_x: &mut String) -> Result<Toke
             // Explicitly allow a few warnings that may be verbose
             #![allow(non_camel_case_types)]
             #![allow(non_snake_case)]
-            #![no_std]
         });
     }
 
     out.extend(quote! {
-        use core::ops::Deref;
         use core::marker::PhantomData;
     });
 
@@ -270,53 +268,6 @@ pub fn render(d: &Device, config: &Config, device_x: &mut String) -> Result<Toke
             }
         }
     }
-
-    out.extend(quote! {
-        // NOTE `no_mangle` is used here to prevent linking different minor versions of the device
-        // crate as that would let you `take` the device peripherals more than once (one per minor
-        // version)
-        #[no_mangle]
-        static mut DEVICE_PERIPHERALS: bool = false;
-
-        /// All the peripherals.
-        #[allow(non_snake_case)]
-        pub struct Peripherals {
-            #fields
-        }
-
-        impl Peripherals {
-            /// Returns all the peripherals *once*.
-            #[cfg(feature = "critical-section")]
-            #[inline]
-            pub fn take() -> Option<Self> {
-                critical_section::with(|_| {
-                    // SAFETY: We are in a critical section, so we have exclusive access
-                    // to `DEVICE_PERIPHERALS`.
-                    if unsafe { DEVICE_PERIPHERALS } {
-                        return None
-                    }
-
-                    // SAFETY: `DEVICE_PERIPHERALS` is set to `true` by `Peripherals::steal`,
-                    // ensuring the peripherals can only be returned once.
-                    Some(unsafe { Peripherals::steal() })
-                })
-            }
-
-            /// Unchecked version of `Peripherals::take`.
-            ///
-            /// # Safety
-            ///
-            /// Each of the returned peripherals must be used at most once.
-            #[inline]
-            pub unsafe fn steal() -> Self {
-                DEVICE_PERIPHERALS = true;
-
-                Peripherals {
-                    #exprs
-                }
-            }
-        }
-    });
 
     Ok(out)
 }

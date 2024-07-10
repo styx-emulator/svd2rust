@@ -1,5 +1,42 @@
 use core::marker;
 
+/// Conversions to and from peripheral struts to memory blocks.
+pub trait FromBytes: Sized {
+    /// Copies bytes into a new peripheral struct.
+    ///
+    /// None will be returned if the number of bytes is not correct.
+    ///
+    /// # Safety
+    ///
+    /// The bytes must be a valid representation of the peripheral struct and the registers.
+    unsafe fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let self_size = std::mem::size_of::<Self>();
+        if bytes.len() != self_size {
+            return None;
+        }
+        let mut self_uninit = std::mem::MaybeUninit::<Self>::uninit();
+        let self_ptr = self_uninit.as_mut_ptr();
+        let bytes_ptr = bytes.as_ptr();
+
+        // SAFETY: `MaybeUninit` ensures size and alignment are correct
+        unsafe { std::ptr::copy(bytes_ptr, self_ptr as _, self_size) };
+
+        // SAFETY: Safety note in function doc ensures called gives
+        // bytes that represent valid initialization.
+        Some(unsafe { self_uninit.assume_init() })
+    }
+
+    /// Converts a peripheral struct into a byte slice.
+    fn as_bytes_ref(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(
+                (self as *const Self) as *const u8,
+                core::mem::size_of::<Self>(),
+            )
+        }
+    }
+}
+
 /// Raw register type (`u8`, `u16`, `u32`, ...)
 pub trait RawReg:
     Copy
@@ -48,6 +85,8 @@ raw_reg!(u64, 64, mask_u64);
 pub trait RegisterSpec {
     /// Raw register type (`u8`, `u16`, `u32`, ...).
     type Ux: RawReg;
+    /// Offset into peripheral in bytes.
+    const OFFSET: u64;
 }
 
 /// Raw field type
@@ -110,6 +149,161 @@ impl<REG: RegisterSpec> Reg<REG> {
     #[inline(always)]
     pub fn as_ptr(&self) -> *mut REG::Ux {
         self.register.as_ptr()
+    }
+
+    /// Offset into peripheral in bytes.
+    #[inline(always)]
+    pub const fn offset() -> u64 {
+        REG::OFFSET
+    }
+
+    /// Reads the contents of a register.
+    ///
+    /// # Safety
+    ///
+    /// This register operation occurs from the perspective of the
+    /// hardware (allows reads to WO registers) and as such is `unsafe`.
+    ///
+    /// You can read the raw contents of a register by using `bits`:
+    /// ```ignore
+    /// let bits = periph.reg.sys_read().bits();
+    /// ```
+    /// or get the content of a particular field of a register:
+    /// ```ignore
+    /// let reader = periph.reg.sys_read();
+    /// let bits = reader.field1().bits();
+    /// let flag = reader.field2().bit_is_set();
+    /// ```
+    #[inline(always)]
+    pub unsafe fn sys_read(&self) -> R<REG> {
+        R {
+            bits: self.register.get(),
+            _reg: marker::PhantomData,
+        }
+    }
+
+    /// Writes bits to a register.
+    ///
+    /// # Safety
+    ///
+    /// This register operation occurs from the perspective of the
+    /// hardware (allows writes to RO registers) and as such is `unsafe`.
+    ///
+    /// # NOTE
+    ///
+    /// Fields not set will be written as `0`.
+    ///
+    /// You can write raw bits into a register:
+    /// ```ignore
+    /// periph.reg.sys_write_with_zero(|w| unsafe { w.bits(rawbits) });
+    /// ```
+    /// or write only the fields you need:
+    /// ```ignore
+    /// periph.reg.sys_write_with_zero(|w| w
+    ///     .field1().bits(newfield1bits)
+    ///     .field2().set_bit()
+    ///     .field3().variant(VARIANT)
+    /// );
+    /// ```
+    /// or an alternative way of saying the same:
+    /// ```ignore
+    /// periph.reg.sys_write_with_zero(|w| {
+    ///     w.field1().bits(newfield1bits);
+    ///     w.field2().set_bit();
+    ///     w.field3().variant(VARIANT)
+    /// });
+    /// ```
+    #[inline(always)]
+    pub unsafe fn sys_write_with_zero<F>(&self, f: F)
+    where
+        F: FnOnce(&mut W<REG>) -> &mut W<REG>,
+    {
+        self.register.set(
+            f(&mut W {
+                bits: REG::Ux::default(),
+                _reg: marker::PhantomData,
+            })
+            .bits,
+        );
+    }
+    /// Modifies the contents of the register by reading and then writing it.
+    ///
+    /// # Safety
+    ///
+    /// This register operation occurs from the perspective of the
+    /// hardware (allows reads/writes to WO/RO registers)
+    /// and as such is `unsafe`.
+    ///
+    /// E.g. to do a read-modify-write sequence to change parts of a register:
+    /// ```ignore
+    /// periph.reg.sys_modify(|r, w| unsafe { w.bits(
+    ///    r.bits() | 3
+    /// ) });
+    /// ```
+    /// or
+    /// ```ignore
+    /// periph.reg.sys_modify(|_, w| w
+    ///     .field1().bits(newfield1bits)
+    ///     .field2().set_bit()
+    ///     .field3().variant(VARIANT)
+    /// );
+    /// ```
+    /// or an alternative way of saying the same:
+    /// ```ignore
+    /// periph.reg.sys_modify(|_, w| {
+    ///     w.field1().bits(newfield1bits);
+    ///     w.field2().set_bit();
+    ///     w.field3().variant(VARIANT)
+    /// });
+    /// ```
+    /// Other fields will have the value they had before the call to `sys_modify`.
+    #[inline(always)]
+    pub unsafe fn sys_modify<F>(&self, f: F)
+    where
+        for<'w> F: FnOnce(&R<REG>, &'w mut W<REG>) -> &'w mut W<REG>,
+    {
+        let bits = self.register.get();
+        self.register.set(
+            f(
+                &R {
+                    bits,
+                    _reg: marker::PhantomData,
+                },
+                &mut W {
+                    bits,
+                    _reg: marker::PhantomData,
+                },
+            )
+            .bits,
+        );
+    }
+
+    /// Clears the register content to 0
+    ///
+    /// # Safety
+    ///
+    /// This does not obey R/W permissions and is unsafe.
+    ///
+    /// This can be used as an alternative to `sys_reset` when
+    /// it is not available.
+    #[inline(always)]
+    pub unsafe fn sys_register_clear(&self) {
+        self.register.set(REG::Ux::default())
+    }
+}
+
+impl<REG: Resettable> Reg<REG> {
+    /// Resets the register content to the reset value
+    ///
+    /// # Safety
+    ///
+    /// This does not obey R/W permissions and is unsafe.
+    ///
+    /// Note that not all registers implement [`Resettable`],
+    /// so you may have to use `sys_register_clear()` instead.
+    #[inline(always)]
+    pub unsafe fn sys_reset(&self) {
+        self.register.set(REG::RESET_VALUE)
     }
 }
 
@@ -257,7 +451,7 @@ impl<REG: Readable + Writable> Reg<REG> {
 
 #[doc(hidden)]
 pub mod raw {
-    use super::{marker, BitM, FieldSpec, RegisterSpec, Unsafe, Writable};
+    use super::{marker, BitM, FieldSpec, RegisterSpec, Unsafe};
 
     pub struct R<REG: RegisterSpec> {
         pub(crate) bits: REG::Ux,
@@ -280,7 +474,6 @@ pub mod raw {
 
     impl<FI: FieldSpec> FieldReader<FI> {
         /// Creates a new instance of the reader.
-        #[allow(unused)]
         #[inline(always)]
         pub(crate) const fn new(bits: FI::Ux) -> Self {
             Self {
@@ -297,7 +490,6 @@ pub mod raw {
 
     impl<FI> BitReader<FI> {
         /// Creates a new instance of the reader.
-        #[allow(unused)]
         #[inline(always)]
         pub(crate) const fn new(bits: bool) -> Self {
             Self {
@@ -309,7 +501,7 @@ pub mod raw {
 
     pub struct FieldWriter<'a, REG, const WI: u8, FI = u8, Safety = Unsafe>
     where
-        REG: Writable + RegisterSpec,
+        REG: RegisterSpec,
         FI: FieldSpec,
     {
         pub(crate) w: &'a mut W<REG>,
@@ -319,11 +511,10 @@ pub mod raw {
 
     impl<'a, REG, const WI: u8, FI, Safety> FieldWriter<'a, REG, WI, FI, Safety>
     where
-        REG: Writable + RegisterSpec,
+        REG: RegisterSpec,
         FI: FieldSpec,
     {
         /// Creates a new instance of the writer
-        #[allow(unused)]
         #[inline(always)]
         pub(crate) fn new(w: &'a mut W<REG>, o: u8) -> Self {
             Self {
@@ -336,7 +527,7 @@ pub mod raw {
 
     pub struct BitWriter<'a, REG, FI = bool, M = BitM>
     where
-        REG: Writable + RegisterSpec,
+        REG: RegisterSpec,
         bool: From<FI>,
     {
         pub(crate) w: &'a mut W<REG>,
@@ -346,11 +537,10 @@ pub mod raw {
 
     impl<'a, REG, FI, M> BitWriter<'a, REG, FI, M>
     where
-        REG: Writable + RegisterSpec,
+        REG: RegisterSpec,
         bool: From<FI>,
     {
         /// Creates a new instance of the writer
-        #[allow(unused)]
         #[inline(always)]
         pub(crate) fn new(w: &'a mut W<REG>, o: u8) -> Self {
             Self {
@@ -367,6 +557,18 @@ pub mod raw {
 /// Result of the `read` methods of registers. Also used as a closure argument in the `modify`
 /// method.
 pub type R<REG> = raw::R<REG>;
+
+impl<REG: RegisterSpec> R<REG> {
+    /// Reads raw bits from the register.
+    ///
+    /// # Safety
+    ///
+    /// This is a system hardware level operation that ignores permissions.
+    #[inline(always)]
+    pub unsafe fn sys_get(&self) -> REG::Ux {
+        self.bits
+    }
+}
 
 impl<REG: RegisterSpec> R<REG> {
     /// Reads raw bits from register.
@@ -387,11 +589,23 @@ where
         self.bits.eq(&REG::Ux::from(*other))
     }
 }
-
 /// Register writer.
 ///
 /// Used as an argument to the closures in the `write` and `modify` methods of the register.
 pub type W<REG> = raw::W<REG>;
+
+impl<REG: RegisterSpec> W<REG> {
+    /// Writes raw bits to the register.
+    ///
+    /// # Safety
+    ///
+    /// This is a system hardware level operation that ignores permissions.
+    #[inline(always)]
+    pub unsafe fn sys_set(&mut self, bits: REG::Ux) -> &mut Self {
+        self.bits = bits;
+        self
+    }
+}
 
 impl<REG: Writable> W<REG> {
     /// Writes raw bits to the register.
@@ -405,7 +619,10 @@ impl<REG: Writable> W<REG> {
         self
     }
 }
-impl<REG> W<REG> where REG: Writable<Safety = Safe> {
+impl<REG> W<REG>
+where
+    REG: Writable<Safety = Safe>,
+{
     /// Writes raw bits to the register.
     #[inline(always)]
     pub fn set(&mut self, bits: REG::Ux) -> &mut Self {
@@ -481,7 +698,7 @@ pub type FieldWriterSafe<'a, REG, const WI: u8, FI = u8> = raw::FieldWriter<'a, 
 
 impl<'a, REG, const WI: u8, FI> FieldWriter<'a, REG, WI, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     FI: FieldSpec,
     REG::Ux: From<FI::Ux>,
 {
@@ -520,7 +737,7 @@ where
 
 impl<'a, REG, const WI: u8, FI> FieldWriterSafe<'a, REG, WI, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     FI: FieldSpec,
     REG::Ux: From<FI::Ux>,
 {
@@ -563,7 +780,7 @@ macro_rules! bit_proxy {
 
         impl<'a, REG, FI> $writer<'a, REG, FI>
         where
-            REG: Writable + RegisterSpec,
+            REG: RegisterSpec,
             bool: From<FI>,
         {
             /// Field width
@@ -574,7 +791,7 @@ macro_rules! bit_proxy {
             pub const fn width(&self) -> u8 {
                 Self::WIDTH
             }
-        
+
             /// Field offset
             #[inline(always)]
             pub const fn offset(&self) -> u8 {
@@ -607,7 +824,7 @@ bit_proxy!(BitWriter0T, Bit0T);
 
 impl<'a, REG, FI> BitWriter<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     /// Sets the field bit
@@ -626,7 +843,7 @@ where
 
 impl<'a, REG, FI> BitWriter1S<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     /// Sets the field bit
@@ -639,7 +856,7 @@ where
 
 impl<'a, REG, FI> BitWriter0C<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     /// Clears the field bit
@@ -652,7 +869,7 @@ where
 
 impl<'a, REG, FI> BitWriter1C<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     ///Clears the field bit by passing one
@@ -665,7 +882,7 @@ where
 
 impl<'a, REG, FI> BitWriter0S<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     ///Sets the field bit by passing zero
@@ -678,7 +895,7 @@ where
 
 impl<'a, REG, FI> BitWriter1T<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     ///Toggle the field bit by passing one
@@ -691,7 +908,7 @@ where
 
 impl<'a, REG, FI> BitWriter0T<'a, REG, FI>
 where
-    REG: Writable + RegisterSpec,
+    REG: RegisterSpec,
     bool: From<FI>,
 {
     ///Toggle the field bit by passing zero
