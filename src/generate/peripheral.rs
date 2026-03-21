@@ -596,7 +596,7 @@ fn register_or_cluster_block(
             #rbfs
         }
 
-        impl crate::FromBytes for RegisterBlock {}
+        impl crate::FromBytes for #block_ty {}
 
         #accessors
     })
